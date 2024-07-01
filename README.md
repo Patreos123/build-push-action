@@ -19,24 +19,11 @@ ___
   * [Git context](#git-context)
   * [Path context](#path-context)
 * [Examples](#examples)
-  * [Multi-platform image](https://docs.docker.com/build/ci/github-actions/multi-platform/)
-  * [Secrets](https://docs.docker.com/build/ci/github-actions/secrets/)
-  * [Push to multi-registries](https://docs.docker.com/build/ci/github-actions/push-multi-registries/)
-  * [Manage tags and labels](https://docs.docker.com/build/ci/github-actions/manage-tags-labels/)
-  * [Cache management](https://docs.docker.com/build/ci/github-actions/cache/)
-  * [Export to Docker](https://docs.docker.com/build/ci/github-actions/export-docker/)
-  * [Test before push](https://docs.docker.com/build/ci/github-actions/test-before-push/)
-  * [Local registry](https://docs.docker.com/build/ci/github-actions/local-registry/)
-  * [Share built image between jobs](https://docs.docker.com/build/ci/github-actions/share-image-jobs/)
-  * [Named contexts](https://docs.docker.com/build/ci/github-actions/named-contexts/)
-  * [Copy image between registries](https://docs.docker.com/build/ci/github-actions/copy-image-registries/)
-  * [Update Docker Hub repo description](https://docs.docker.com/build/ci/github-actions/update-dockerhub-desc/)
-  * [SBOM and provenance attestations](https://docs.docker.com/build/ci/github-actions/attestations/)
-  * [Annotations](https://docs.docker.com/build/ci/github-actions/annotations/)
-  * [Reproducible builds](https://docs.docker.com/build/ci/github-actions/reproducible-builds/)
+* [Summaries](#summaries)
 * [Customizing](#customizing)
   * [inputs](#inputs)
   * [outputs](#outputs)
+  * [environment variables](#environment-variables)
 * [Troubleshooting](#troubleshooting)
 * [Contributing](#contributing)
 
@@ -68,8 +55,6 @@ name: ci
 
 on:
   push:
-    branches:
-      - 'main'
 
 jobs:
   docker:
@@ -89,7 +74,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       -
         name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           push: true
           tags: user/app:latest
@@ -108,13 +93,8 @@ to the default Git context:
 
 ```yaml
       -
-        # Setting up Docker Buildx with docker-container driver is required
-        # at the moment to be able to use a subdirectory with Git context
-        name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      -
         name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: "{{defaultContext}}:mysubdir"
           push: true
@@ -129,7 +109,7 @@ named `GIT_AUTH_TOKEN` to be able to authenticate against it with Buildx:
 ```yaml
       -
         name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           push: true
           tags: user/app:latest
@@ -144,8 +124,6 @@ name: ci
 
 on:
   push:
-    branches:
-      - 'main'
 
 jobs:
   docker:
@@ -168,7 +146,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       -
         name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
@@ -193,11 +171,31 @@ jobs:
 * [Annotations](https://docs.docker.com/build/ci/github-actions/annotations/)
 * [Reproducible builds](https://docs.docker.com/build/ci/github-actions/reproducible-builds/)
 
+## Summaries
+
+This action generates a [job summary](https://github.blog/2022-05-09-supercharging-github-actions-with-job-summaries/)
+that provides a detailed overview of the build execution. The summary shows an
+overview of all the steps executed during the build, including the build inputs
+and eventual errors.
+
+![build-push-action job summary](./.github/build-push-summary.png)
+
+The summary also includes a link for downloading the build record with
+additional details about the build, including build stats, logs, outputs, and
+more. The build record can be imported to Docker Desktop for inspecting the
+build in greater detail.
+
+Summaries are enabled by default, but can be disabled with the
+`DOCKER_BUILD_NO_SUMMARY` [environment variable](#environment-variables).
+
+For more information about summaries, refer to the
+[documentation](https://docs.docker.com/go/build-summary/).
+
 ## Customizing
 
 ### inputs
 
-Following inputs can be used as `step.with` keys
+The following inputs can be used as `step.with` keys:
 
 > `List` type is a newline-delimited string
 > ```yaml
@@ -255,6 +253,13 @@ The following outputs are available:
 | `imageid`  | String  | Image ID              |
 | `digest`   | String  | Image digest          |
 | `metadata` | JSON    | Build result metadata |
+
+### environment variables
+
+| Name                                 | Type   | Description                                                                                                                                                                                                                                                        |
+|--------------------------------------|--------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `DOCKER_BUILD_NO_SUMMARY`            | Bool   | If `true`, [build summary](https://docs.docker.com/build/ci/github-actions/build-summary/) generation is disabled                                                                                                                                                  |
+| `DOCKER_BUILD_EXPORT_RETENTION_DAYS` | Number | Duration after which build export artifact will expire in days. Defaults to repository/org [retention settings](https://docs.github.com/en/actions/learn-github-actions/usage-limits-billing-and-administration#artifact-and-log-retention-policy) if unset or `0` |
 
 ## Troubleshooting
 

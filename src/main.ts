@@ -4,22 +4,26 @@ import * as stateHelper from './state-helper';
 import * as core from '@actions/core';
 import * as actionsToolkit from '@docker/actions-toolkit';
 
-import {Build} from '@docker/actions-toolkit/lib/buildx/build';
+import {Buildx} from '@docker/actions-toolkit/lib/buildx/buildx';
+import {History as BuildxHistory} from '@docker/actions-toolkit/lib/buildx/history';
 import {Context} from '@docker/actions-toolkit/lib/context';
 import {Docker} from '@docker/actions-toolkit/lib/docker/docker';
 import {Exec} from '@docker/actions-toolkit/lib/exec';
 import {GitHub} from '@docker/actions-toolkit/lib/github';
 import {Toolkit} from '@docker/actions-toolkit/lib/toolkit';
+import {Util} from '@docker/actions-toolkit/lib/util';
 
-import {ConfigFile} from '@docker/actions-toolkit/lib/types/docker';
+import {ConfigFile} from '@docker/actions-toolkit/lib/types/docker/docker';
 
 import * as context from './context';
 
 actionsToolkit.run(
   // main
   async () => {
+    const startedTime = new Date();
     const inputs: context.Inputs = await context.getInputs();
     core.debug(`inputs: ${JSON.stringify(inputs)}`);
+    stateHelper.setInputs(inputs);
 
     const toolkit = new Toolkit();
 
@@ -76,6 +80,12 @@ actionsToolkit.run(
       await toolkit.buildx.printVersion();
     });
 
+    await core.group(`Builder info`, async () => {
+      const builder = await toolkit.builder.inspect(inputs.builder);
+      core.info(JSON.stringify(builder, null, 2));
+      stateHelper.setBuilder(builder);
+    });
+
     const args: string[] = await context.getArgs(inputs, toolkit);
     core.debug(`context.getArgs: ${JSON.stringify(args)}`);
 
@@ -83,17 +93,18 @@ actionsToolkit.run(
     core.debug(`buildCmd.command: ${buildCmd.command}`);
     core.debug(`buildCmd.args: ${JSON.stringify(buildCmd.args)}`);
 
+    let err: Error | undefined;
     await Exec.getExecOutput(buildCmd.command, buildCmd.args, {
       ignoreReturnCode: true
     }).then(res => {
       if (res.stderr.length > 0 && res.exitCode != 0) {
-        throw new Error(`buildx failed with: ${res.stderr.match(/(.*)\s*$/)?.[0]?.trim() ?? 'unknown error'}`);
+        err = Error(`buildx failed with: ${res.stderr.match(/(.*)\s*$/)?.[0]?.trim() ?? 'unknown error'}`);
       }
     });
 
-    const imageID = Build.resolveImageID();
-    const metadata = Build.resolveMetadata();
-    const digest = Build.resolveDigest();
+    const imageID = toolkit.buildxBuild.resolveImageID();
+    const metadata = toolkit.buildxBuild.resolveMetadata();
+    const digest = toolkit.buildxBuild.resolveDigest();
 
     if (imageID) {
       await core.group(`ImageID`, async () => {
@@ -114,9 +125,53 @@ actionsToolkit.run(
         core.setOutput('metadata', metadatadt);
       });
     }
+    await core.group(`Reference`, async () => {
+      const ref = await buildRef(toolkit, startedTime, inputs.builder);
+      if (ref) {
+        core.info(ref);
+        stateHelper.setBuildRef(ref);
+      } else {
+        core.warning('No build ref found');
+      }
+    });
+    if (err) {
+      throw err;
+    }
   },
   // post
   async () => {
+    if (stateHelper.buildRef.length > 0) {
+      await core.group(`Generating build summary`, async () => {
+        if (process.env.DOCKER_BUILD_NO_SUMMARY && Util.parseBool(process.env.DOCKER_BUILD_NO_SUMMARY)) {
+          core.info('Summary disabled');
+          return;
+        }
+        if (stateHelper.builder && stateHelper.builder.driver === 'cloud') {
+          core.info('Summary is not yet supported with Docker Build Cloud');
+          return;
+        }
+        try {
+          const exportRetentionDays = buildExportRetentionDays();
+          const buildxHistory = new BuildxHistory();
+          const exportRes = await buildxHistory.export({
+            refs: [stateHelper.buildRef]
+          });
+          core.info(`Build record exported to ${exportRes.dockerbuildFilename} (${Util.formatFileSize(exportRes.dockerbuildSize)})`);
+          const uploadRes = await GitHub.uploadArtifact({
+            filename: exportRes.dockerbuildFilename,
+            mimeType: 'application/gzip',
+            retentionDays: exportRetentionDays
+          });
+          await GitHub.writeBuildSummary({
+            exportRes: exportRes,
+            uploadRes: uploadRes,
+            inputs: stateHelper.inputs
+          });
+        } catch (e) {
+          core.warning(e.message);
+        }
+      });
+    }
     if (stateHelper.tmpDir.length > 0) {
       await core.group(`Removing temp folder ${stateHelper.tmpDir}`, async () => {
         fs.rmSync(stateHelper.tmpDir, {recursive: true});
@@ -124,3 +179,32 @@ actionsToolkit.run(
     }
   }
 );
+
+async function buildRef(toolkit: Toolkit, since: Date, builder?: string): Promise<string> {
+  // get ref from metadata file
+  const ref = toolkit.buildxBuild.resolveRef();
+  if (ref) {
+    return ref;
+  }
+  // otherwise, look for the very first build ref since the build has started
+  if (!builder) {
+    const currentBuilder = await toolkit.builder.inspect();
+    builder = currentBuilder.name;
+  }
+  const refs = Buildx.refs({
+    dir: Buildx.refsDir,
+    builderName: builder,
+    since: since
+  });
+  return Object.keys(refs).length > 0 ? Object.keys(refs)[0] : '';
+}
+
+function buildExportRetentionDays(): number | undefined {
+  if (process.env.DOCKER_BUILD_EXPORT_RETENTION_DAYS) {
+    const res = parseInt(process.env.DOCKER_BUILD_EXPORT_RETENTION_DAYS);
+    if (isNaN(res)) {
+      throw Error(`Invalid build export retention days: ${process.env.DOCKER_BUILD_EXPORT_RETENTION_DAYS}`);
+    }
+    return res;
+  }
+}
